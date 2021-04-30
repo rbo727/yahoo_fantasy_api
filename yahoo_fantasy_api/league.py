@@ -1,7 +1,6 @@
 #!/bin/python
 
-import yahoo_fantasy_api as yfa
-from yahoo_fantasy_api import yhandler
+from fantasytools.yahoo_fantasy_api import yhandler, team
 import objectpath
 import datetime
 
@@ -19,8 +18,7 @@ class League:
         self.sc = sc
         self.league_id = league_id
         self.yhandler = yhandler.YHandler(sc)
-        self.current_week_cache = None
-        self.end_week_cache = None
+        self.settings_cache = {}
         self.week_date_range_cache = {}
         self.free_agent_cache = {}
 
@@ -35,9 +33,10 @@ class League:
         :return: Fully constructed object
         :rtype: Team
         """
-        tm = yfa.Team(self.sc, team_key)
+        tm = team.Team(self.sc, team_key)
         tm.inject_yhandler(self.yhandler)
         return tm
+
 
     def standings(self):
         """Return the standings of the league id
@@ -100,15 +99,34 @@ class League:
         'start_date': '2019-03-20', 'end_date': '2019-09-22',
         'game_code': 'mlb', 'season': '2019'}
         """
-        json = self.yhandler.get_settings_raw(self.league_id)
-        t = objectpath.Tree(json)
+
+        self.settings_cache = self.settings_cache or self.yhandler.get_settings_raw(self.league_id)
+
+        t = objectpath.Tree(self.settings_cache)
         settings_to_return = """
-        name, scoring_type,
-        start_week, current_week, end_week,start_date, end_date,
-        game_code, season
+        name, league_key, league_id, url, draft_status, num_teams, scoring_type,
+        start_week, current_week, end_week,start_date, end_date, game_code, season, is_finished
         """
-        return t.execute('$.fantasy_content.league.({})[0]'.format(
-            settings_to_return))
+
+        return t.execute('$.fantasy_content.league.({})[0]'.format(settings_to_return))
+
+    def stats(self):
+        """Return all stat settings for a league
+
+        :returns: Each dict entry will have all stat details, along
+            with a stat_category list, which provides information about how
+            the stat is used in the league
+        :rtype: List(Dict(List((Dict)))
+
+        >>> lg.stat_categories()
+        [{'display_name': 'R', 'position_type': 'B'}, {'display_name': 'HR',
+        'position_type': 'B'}, {'display_name': 'W', 'position_type': 'P'}]
+        """
+        self.settings_cache = self.settings_cache or self.yhandler.get_settings_raw(self.league_id)
+
+        t = objectpath.Tree(self.settings_cache)
+        json = t.execute('$..stat_categories..stat')
+        return json
 
     def stat_categories(self):
         """Return the stat categories for a league
@@ -117,11 +135,13 @@ class League:
             with the position type ('B' for batter or 'P' for pitcher).
         :rtype: List(Dict)
 
-        >>> lg.stat_categories('370.l.56877')
+        >>> lg.stat_categories()
         [{'display_name': 'R', 'position_type': 'B'}, {'display_name': 'HR',
         'position_type': 'B'}, {'display_name': 'W', 'position_type': 'P'}]
         """
-        t = objectpath.Tree(self.yhandler.get_settings_raw(self.league_id))
+        self.settings_cache = self.settings_cache or self.yhandler.get_settings_raw(self.league_id)
+
+        t = objectpath.Tree(self.settings_cache)
         json = t.execute('$..stat_categories..stat')
         simple_stat = []
         for s in json:
@@ -130,6 +150,24 @@ class League:
                 simple_stat.append({"display_name": s["display_name"],
                                     "position_type": s["position_type"]})
         return simple_stat
+
+    def stat_names(self):
+        """Return the stat names for each stat id
+
+        :returns: Each dict entry will have the stat id: stat_name
+        :rtype: Dict
+
+        >>> lg.stat_names()
+
+        """
+        self.settings_cache = self.settings_cache or self.yhandler.get_settings_raw(self.league_id)
+
+        t = objectpath.Tree(self.settings_cache)
+        json = t.execute('$..stat_categories..stat')
+        stat_names = {}
+        for s in json:
+            stat_names[s["stat_id"]] = s["display_name"]
+        return stat_names
 
     def team_key(self):
         """Return the team_key for logged in users team in this league
@@ -155,11 +193,8 @@ class League:
         >>> lg.current_week()
         12
         """
-        if self.current_week_cache is None:
-            t = objectpath.Tree(self.yhandler.get_scoreboard_raw(
-                self.league_id))
-            self.current_week_cache = t.execute('$..current_week[0]')
-        return self.current_week_cache
+        settings = self.settings()
+        return int(settings['current_week'])
 
     def end_week(self):
         """Return the ending week number of the league.
@@ -170,11 +205,8 @@ class League:
         >>> lg.end_week()
         24
         """
-        if self.end_week_cache is None:
-            t = objectpath.Tree(
-                self.yhandler.get_scoreboard_raw(self.league_id))
-            self.end_week_cache = int(t.execute('$..end_week[0]'))
-        return self.end_week_cache
+        settings = self.settings()
+        return int(settings['end_week'])
 
     def week_date_range(self, week):
         """Return the start and end date of a given week.
